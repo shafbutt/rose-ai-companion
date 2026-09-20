@@ -521,6 +521,13 @@ body::after{
       <div class="conf-track"><div class="conf-fill" id="confFill"></div></div>
       <span class="conf-val" id="confVal">0%</span>
     </div>
+
+    <div class="panel-title">Memory <span class="status-badge checking" id="memoryBadge">CHECKING</span></div>
+    <div class="info-row"><span class="label">Stored</span><span class="value" id="memoryCount">0</span></div>
+    <div class="memory-list" id="memoryList" style="max-height:120px;overflow-y:auto;margin-top:6px;font-size:11px;color:var(--muted);">
+      <div style="color:var(--dim);font-style:italic;">No memories yet</div>
+    </div>
+    <button onclick="clearAllMemories()" style="margin-top:8px;width:100%;padding:5px;font-size:10px;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:3px;cursor:pointer;letter-spacing:1px;text-transform:uppercase;" onmouseover="this.style.borderColor='var(--pink)'" onmouseout="this.style.borderColor='var(--line)'">Clear All Memories</button>
   </div>
 
   <!-- Center: Orb -->
@@ -725,6 +732,8 @@ async function loadSystemInfo() {
     document.getElementById('ttsModel').textContent = info.tts_model;
     document.getElementById('llmModel').textContent = info.llm_model;
     updateApiBadge(info.api_status);
+    updateMemoryBadge(info.memory_enabled, info.memory_count);
+    loadMemories();
   } catch (e) { /* will retry on next poll */ }
 }
 
@@ -732,6 +741,48 @@ function updateApiBadge(status) {
   const badge = document.getElementById('apiBadge');
   badge.className = 'status-badge ' + (status === 'connected' ? 'online' : status === 'error' ? 'error' : 'checking');
   badge.textContent = status === 'connected' ? 'ONLINE' : status === 'error' ? 'ERROR' : 'CHECKING';
+}
+
+// ---- Memory panel ----
+function updateMemoryBadge(enabled, count) {
+  const badge = document.getElementById('memoryBadge');
+  badge.className = 'status-badge ' + (enabled ? 'online' : 'error');
+  badge.textContent = enabled ? 'ACTIVE' : 'OFFLINE';
+  document.getElementById('memoryCount').textContent = count || 0;
+}
+
+async function loadMemories() {
+  try {
+    const mems = await window.pywebview.api.get_memories();
+    const list = document.getElementById('memoryList');
+    const countEl = document.getElementById('memoryCount');
+    countEl.textContent = mems.length;
+    if (mems.length === 0) {
+      list.innerHTML = '<div style="color:var(--dim);font-style:italic;">No memories yet</div>';
+      return;
+    }
+    list.innerHTML = mems.map(m => {
+      const cat = m.category === 'name' ? '\ud83d\udc64' : m.category === 'preference' ? '\u2764' : '\ud83d\udcac';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--line);">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${m.content}">${cat} ${m.content}</span>
+        <button onclick="deleteMemory(${m.id})" style="margin-left:6px;background:none;border:none;color:var(--pink);cursor:pointer;font-size:12px;" title="Delete">\u2715</button>
+      </div>`;
+    }).join('');
+  } catch (e) { /* ignore */ }
+}
+
+async function deleteMemory(id) {
+  try {
+    await window.pywebview.api.delete_memory(id);
+    loadMemories();
+  } catch (e) { /* ignore */ }
+}
+
+async function clearAllMemories() {
+  try {
+    await window.pywebview.api.clear_memories();
+    loadMemories();
+  } catch (e) { /* ignore */ }
 }
 
 // ---- Connection indicator ----

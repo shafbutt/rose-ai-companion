@@ -18,7 +18,7 @@ from config import settings
 class UIBridge:
     """Exposed to the frontend as `window.pywebview.api`."""
 
-    def __init__(self):
+    def __init__(self, memory_manager=None, groq=None):
         self._events = []
         self._lock = threading.Lock()
         self._state = "booting"
@@ -31,6 +31,8 @@ class UIBridge:
         self._api_status = "connected"
         self._mic_device = f"Device {settings.get('device_index')}"
         self._groq_ok = False
+        self._memory = memory_manager    # injected reference — no circular import
+        self._groq = groq               # injected reference — no circular import
 
     # ------------------------------------------------------------------ #
     #  Backend → UI  (called from the daemon thread)
@@ -94,6 +96,8 @@ class UIBridge:
             "llm_model": settings.get("llm_model"),
             "api_status": self._api_status,
             "mic_device": self._mic_device,
+            "memory_enabled": self._memory.is_available() if self._memory else False,
+            "memory_count": self._memory.count() if self._memory else 0,
         }
 
     def get_conversation(self):
@@ -102,8 +106,10 @@ class UIBridge:
     def test_api_connection(self):
         """Lightweight check that the Groq client is reachable."""
         try:
-            from rose_app import groq_client
-            groq_client.chat.completions.create(
+            if not self._groq:
+                self._api_status = "error"
+                return {"ok": False, "error": "Groq client not initialised"}
+            self._groq.chat.completions.create(
                 model=settings.get("llm_model"),
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
@@ -113,6 +119,39 @@ class UIBridge:
         except Exception as e:
             self._api_status = "error"
             return {"ok": False, "error": str(e)}
+
+    # ------------------------------------------------------------------ #
+    #  Memory management  (frontend → backend)
+    # ------------------------------------------------------------------ #
+
+    def get_memories(self):
+        """Return all active memories for the UI panel."""
+        if not self._memory:
+            return []
+        return self._memory.get_all()
+
+    def delete_memory(self, memory_id):
+        """Delete a single memory by ID."""
+        if not self._memory:
+            return {"ok": False}
+        ok = self._memory.delete(int(memory_id))
+        return {"ok": ok}
+
+    def clear_memories(self):
+        """Delete all active memories."""
+        if not self._memory:
+            return {"ok": True, "deleted": 0}
+        count = self._memory.clear()
+        return {"ok": True, "deleted": count}
+
+    def get_memory_status(self):
+        """Quick status check for the UI badge."""
+        if not self._memory:
+            return {"enabled": False, "count": 0}
+        return {
+            "enabled": self._memory.is_available(),
+            "count": self._memory.count(),
+        }
 
     # ------------------------------------------------------------------ #
     #  Poll endpoint  (called by frontend every ~250 ms)

@@ -20,6 +20,7 @@ from piper import PiperVoice
 from piper.config import SynthesisConfig
 from config import settings, INITIAL_PROMPT, SYSTEM_PROMPT
 from ui_bridge import UIBridge
+from memory import MemoryManager
 
 load_dotenv()
 try:
@@ -31,7 +32,8 @@ except Exception as e:
 # ---- shared audio buffer: ONE mic stream feeds everything ----
 buffer_lock = threading.Lock()
 audio_buffer = []   # plain list of int16 samples
-ui = UIBridge()     # communication bridge to the frontend
+memory = MemoryManager()  # persistent SQLite memory
+ui = UIBridge(memory_manager=memory, groq=groq_client)  # communication bridge to the frontend
 mic_stream = None   # global reference so we can pause during transcription
 
 # ---- Diagnostic logging ----
@@ -164,10 +166,24 @@ def transcribe():
 
 
 def ask_llm(user_text):
+    # ---- Memory command handling ----
+    memory_reply = _handle_memory_command(user_text)
+    if memory_reply is not None:
+        # It was a memory command — reply directly without LLM call
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": memory_reply})
+        return memory_reply
+
+    # ---- Inject relevant memories into system prompt ----
+    memory_context = memory.format_for_prompt(user_text, max_tokens=400)
+    system_with_memory = SYSTEM_PROMPT
+    if memory_context:
+        system_with_memory += f"\n\n{memory_context}"
+
     conversation_history.append({"role": "user", "content": user_text})
     # Keep only last 6 messages to stay within token limits
     recent = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + recent
+    messages = [{"role": "system", "content": system_with_memory}] + recent
     # Retry up to 2 times on 429 (rate limit) with short delay
     for attempt in range(3):
         try:
@@ -187,6 +203,141 @@ def ask_llm(user_text):
             conversation_history.pop()
             ui.set_api_status("error")
             return "Sorry, I'm having trouble connecting right now."
+
+
+# ---------- Memory command detection ----------
+
+import re as _re
+
+_STORE_PATTERNS = [
+    # Explicit: "remember that X", "don't forget X", etc.
+    _re.compile(r"^.*(remember\s+that|please\s+remember|don'?t\s+forget|do\s+not\s+forget|keep\s+in\s+mind)\b(.*)", _re.I),
+]
+# Auto-detect: personal statements the user probably wants saved (no trigger word needed)
+_AUTO_STORE_PATTERNS = [
+    # "my favorite/fav X is Y", "X is my favorite/fav"
+    _re.compile(r"^.*(my\s+(?:favo(?:u|)rite|fav)\s+\w+\s+(?:is|are)\b.+)", _re.I),
+    _re.compile(r"^(.+\s+is\s+my\s+(?:favo(?:u|)rite|fav)\b.*)", _re.I),
+    # "my name is X", "I'm called X", "call me X"
+    _re.compile(r"^(?:.*(?:my\s+name\s+is|i'm\s+called|i\s+am\s+called|call\s+me)\s+)(.+)", _re.I),
+    # "I like/love/prefer/hate X" (but not questions like "do you like...")
+    _re.compile(r"^(i\s+(?:like|love|prefer|adore|hate|dislike)\s+(?:that|it|this|when|\.+)\.*)$", _re.I),
+    _re.compile(r"^(i\s+(?:like|love|prefer|adore|hate|dislike)\s+\w{2,}.*)$", _re.I),
+]
+_RECALL_PATTERNS = [
+    _re.compile(r"^.*(what\s+do\s+you\s+remember|what\s+do\s+you\s+know|do\s+you\s+remember|show\s+my\s+memories|list\s+my\s+memories|my\s+memories)\b.*", _re.I),
+]
+_FORGET_PATTERNS = [
+    _re.compile(r"^.*(forget\s+that|forget\s+about|delete\s+that\s+memory|remove\s+that\s+memory)\b(.*)", _re.I),
+]
+_CLEAR_PATTERNS = [
+    _re.compile(r"^.*(clear\s+(my\s+)?memories|delete\s+(all\s+)?(my\s+)?memories|forget\s+everything|reset\s+memories)\b.*", _re.I),
+]
+
+
+def _detect_category(content: str):
+    """Return (category, importance) based on content keywords."""
+    lower = content.lower()
+    if any(w in lower for w in ["my name is", "i'm called", "i am called", "call me"]):
+        return "name", 10
+    if any(w in lower for w in ["i prefer", "i like", "my favorite", "my fav", "i love", "i hate", "don't like", "i dislike", "i adore"]):
+        return "preference", 7
+    return "fact", 5
+
+
+# Messages too short or generic to bother saving
+_TRIVIAL_MESSAGES = frozenset([
+    "hi", "hey", "hello", "yo", "sup", "yeah", "yep", "yup", "no", "nope",
+    "ok", "okay", "sure", "hmm", "hm", "uh", "um", "thanks", "thank you",
+    "bye", "goodbye", "lol", "lmao", "haha", "nice", "cool", "wow",
+    "what", "really", "oh", "ohh", "ohhh", "k", "yah", "nah",
+])
+
+
+def _auto_save_chat(user_text: str):
+    """Save user's message to memory so ROSE remembers past conversations."""
+    try:
+        text = user_text.strip()
+        lower = text.lower()
+        # Skip trivial one-worders
+        if lower in _TRIVIAL_MESSAGES:
+            return
+        # Skip very short messages (1 word, < 3 chars)
+        words = text.split()
+        if len(words) < 2 and len(text) < 3:
+            return
+        # Skip if it was already handled as a memory command (avoid double-save)
+        for pat in _STORE_PATTERNS + _AUTO_STORE_PATTERNS:
+            if pat.match(text):
+                return  # already saved by _handle_memory_command
+        # Save as "chat" category with low importance (recency handles retrieval)
+        memory.store(text, category="chat", importance=3)
+    except Exception:
+        pass  # never crash the conversation loop
+
+
+def _handle_memory_command(user_text: str):
+    """
+    Check if user_text is a memory command. If so, execute it and return a reply string.
+    Returns None if it's NOT a memory command (caller should proceed to LLM).
+    """
+    text = user_text.strip()
+
+    # 1) Clear all memories
+    for pat in _CLEAR_PATTERNS:
+        if pat.match(text):
+            count = memory.clear()
+            if count > 0:
+                return f"Done, I've cleared all {count} memories."
+            return "There's nothing to clear — my memory is already empty."
+
+    # 2) Forget specific memory
+    for pat in _FORGET_PATTERNS:
+        m = pat.match(text)
+        if m:
+            keyword = m.group(2).strip().rstrip(".").strip()
+            if keyword:
+                count = memory.delete_by_keyword(keyword)
+                if count > 0:
+                    return f"Okay, I've forgotten {count} memory about '{keyword}'."
+                return f"I couldn't find any memory about '{keyword}'."
+            return "What exactly should I forget? Tell me the topic."
+
+    # 3) Recall / show memories
+    for pat in _RECALL_PATTERNS:
+        if pat.match(text):
+            mems = memory.get_all()
+            if not mems:
+                return "I don't have any memories stored yet. Tell me something to remember!"
+            items = [f"{m['content']}" for m in mems[:5]]
+            return "Here's what I remember: " + "; ".join(items) + "."
+
+    # 4) Store a new memory (explicit trigger word)
+    for pat in _STORE_PATTERNS:
+        m = pat.match(text)
+        if m:
+            # Extract the part after the trigger phrase
+            content = m.group(2).strip().rstrip(".").strip()
+            if not content:
+                return "Sure, what should I remember?"
+            # Detect category
+            category, importance = _detect_category(content)
+            if memory.store(content, category=category, importance=importance):
+                return f"Got it, I'll remember that {content}."
+            return "Sorry, I couldn't save that right now — memory might be unavailable."
+
+    # 5) Auto-store: detect personal statements without explicit trigger words
+    for pat in _AUTO_STORE_PATTERNS:
+        m = pat.match(text)
+        if m:
+            content = m.group(1).strip().rstrip(".").strip()
+            if content:
+                category, importance = _detect_category(content)
+                if memory.store(content, category=category, importance=importance):
+                    return f"Got it, I'll remember that {content}."
+                return "Sorry, I couldn't save that right now."
+
+    return None  # not a memory command
 
 
 def speak(text):
@@ -295,6 +446,9 @@ def active_session(ui):
 
         reply = ask_llm(user_text)
         ui.emit_message("ROSE", reply)
+
+        # Auto-save user's message to persistent memory (like a chatbot)
+        _auto_save_chat(user_text)
 
         task_count += 1
         ui.set_task_count(task_count)
