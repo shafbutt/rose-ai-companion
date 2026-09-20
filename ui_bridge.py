@@ -18,7 +18,7 @@ from config import settings
 class UIBridge:
     """Exposed to the frontend as `window.pywebview.api`."""
 
-    def __init__(self, memory_manager=None, groq=None):
+    def __init__(self, memory_manager=None, groq=None, action_manager=None):
         self._events = []
         self._lock = threading.Lock()
         self._state = "booting"
@@ -33,6 +33,7 @@ class UIBridge:
         self._groq_ok = False
         self._memory = memory_manager    # injected reference — no circular import
         self._groq = groq               # injected reference — no circular import
+        self._actions = action_manager   # injected reference — no circular import
 
     # ------------------------------------------------------------------ #
     #  Backend → UI  (called from the daemon thread)
@@ -98,6 +99,7 @@ class UIBridge:
             "mic_device": self._mic_device,
             "memory_enabled": self._memory.is_available() if self._memory else False,
             "memory_count": self._memory.count() if self._memory else 0,
+            "actions_enabled": self._actions.is_available() if self._actions else False,
         }
 
     def get_conversation(self):
@@ -152,6 +154,38 @@ class UIBridge:
             "enabled": self._memory.is_available(),
             "count": self._memory.count(),
         }
+
+    # ------------------------------------------------------------------ #
+    #  System actions  (frontend → backend)
+    # ------------------------------------------------------------------ #
+
+    def get_allowed_apps(self):
+        """Return list of whitelisted apps the user can open via voice."""
+        if not self._actions:
+            return []
+        return self._actions.get_allowed_apps()
+
+    def get_allowed_folders(self):
+        """Return list of whitelisted folders the user can open via voice."""
+        if not self._actions:
+            return []
+        return self._actions.get_allowed_folders()
+
+    def get_action_status(self):
+        """Return pending confirmation + recent action log."""
+        if not self._actions:
+            return {"pending": None, "log": []}
+        return {
+            "pending": self._actions.get_pending(),
+            "log": self._actions.get_log(),
+        }
+
+    def cancel_action(self):
+        """Cancel any pending dangerous action."""
+        if not self._actions:
+            return {"ok": False}
+        self._actions.cancel_pending()
+        return {"ok": True}
 
     # ------------------------------------------------------------------ #
     #  Poll endpoint  (called by frontend every ~250 ms)

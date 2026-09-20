@@ -528,6 +528,21 @@ body::after{
       <div style="color:var(--dim);font-style:italic;">No memories yet</div>
     </div>
     <button onclick="clearAllMemories()" style="margin-top:8px;width:100%;padding:5px;font-size:10px;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:3px;cursor:pointer;letter-spacing:1px;text-transform:uppercase;" onmouseover="this.style.borderColor='var(--pink)'" onmouseout="this.style.borderColor='var(--line)'">Clear All Memories</button>
+
+    <div class="panel-title">System Actions <span class="status-badge checking" id="actionsBadge">CHECKING</span></div>
+    <div id="actionPending" style="display:none;padding:8px;margin:6px 0;border-radius:4px;background:rgba(255,68,68,0.1);border:1px solid rgba(255,68,68,0.3);">
+      <div style="font-size:11px;color:var(--red);font-weight:600;letter-spacing:1px;">⚠ PENDING</div>
+      <div style="font-size:11px;color:var(--text);margin-top:4px;" id="actionPendingText">—</div>
+      <button onclick="cancelAction()" style="margin-top:6px;width:100%;padding:4px;font-size:10px;background:rgba(255,68,68,0.1);border:1px solid rgba(255,68,68,0.3);color:var(--red);border-radius:3px;cursor:pointer;letter-spacing:1px;">CANCEL</button>
+    </div>
+    <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px;margin:6px 0 4px;">ALLOWED APPS</div>
+    <div id="actionApps" style="font-size:11px;color:var(--muted);line-height:1.6;"></div>
+    <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px;margin:8px 0 4px;">ALLOWED FOLDERS</div>
+    <div id="actionFolders" style="font-size:11px;color:var(--muted);line-height:1.6;"></div>
+    <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px;margin:8px 0 4px;">RECENT ACTIONS</div>
+    <div id="actionLog" style="max-height:80px;overflow-y:auto;font-size:10px;color:var(--muted);">
+      <div style="font-style:italic;">No actions yet</div>
+    </div>
   </div>
 
   <!-- Center: Orb -->
@@ -734,6 +749,9 @@ async function loadSystemInfo() {
     updateApiBadge(info.api_status);
     updateMemoryBadge(info.memory_enabled, info.memory_count);
     loadMemories();
+    updateActionsBadge(info.actions_enabled);
+    loadActionWhitelist();
+    loadActionStatus();
   } catch (e) { /* will retry on next poll */ }
 }
 
@@ -782,6 +800,53 @@ async function clearAllMemories() {
   try {
     await window.pywebview.api.clear_memories();
     loadMemories();
+  } catch (e) { /* ignore */ }
+}
+
+// ---- System Actions panel ----
+function updateActionsBadge(enabled) {
+  const badge = document.getElementById('actionsBadge');
+  badge.className = 'status-badge ' + (enabled ? 'online' : 'error');
+  badge.textContent = enabled ? 'ACTIVE' : 'OFFLINE';
+}
+
+async function loadActionWhitelist() {
+  try {
+    const apps = await window.pywebview.api.get_allowed_apps();
+    const folders = await window.pywebview.api.get_allowed_folders();
+    document.getElementById('actionApps').textContent = apps.join(', ');
+    document.getElementById('actionFolders').textContent = folders.join(', ');
+  } catch (e) { /* ignore */ }
+}
+
+async function loadActionStatus() {
+  try {
+    const status = await window.pywebview.api.get_action_status();
+    // Pending confirmation
+    const pendingEl = document.getElementById('actionPending');
+    if (status.pending) {
+      pendingEl.style.display = 'block';
+      document.getElementById('actionPendingText').textContent =
+        status.pending.label + ' (' + status.pending.seconds_left + 's)';
+    } else {
+      pendingEl.style.display = 'none';
+    }
+    // Action log
+    const logEl = document.getElementById('actionLog');
+    if (status.log && status.log.length > 0) {
+      logEl.innerHTML = status.log.slice().reverse().map(a => {
+        const icon = a.ok ? '\u2713' : '\u2717';
+        const color = a.ok ? 'var(--green)' : 'var(--red)';
+        return `<div style="padding:2px 0;border-bottom:1px solid var(--line);"><span style="color:${color}">${icon}</span> ${a.message} <span style="color:var(--muted);float:right;">${a.time}</span></div>`;
+      }).join('');
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function cancelAction() {
+  try {
+    await window.pywebview.api.cancel_action();
+    loadActionStatus();
   } catch (e) { /* ignore */ }
 }
 

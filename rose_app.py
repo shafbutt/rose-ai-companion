@@ -21,6 +21,7 @@ from piper.config import SynthesisConfig
 from config import settings, INITIAL_PROMPT, SYSTEM_PROMPT
 from ui_bridge import UIBridge
 from memory import MemoryManager
+from system_actions import ActionManager
 
 load_dotenv()
 try:
@@ -33,7 +34,8 @@ except Exception as e:
 buffer_lock = threading.Lock()
 audio_buffer = []   # plain list of int16 samples
 memory = MemoryManager()  # persistent SQLite memory
-ui = UIBridge(memory_manager=memory, groq=groq_client)  # communication bridge to the frontend
+actions = ActionManager()  # system actions (shutdown, lock, open apps)
+ui = UIBridge(memory_manager=memory, groq=groq_client, action_manager=actions)  # communication bridge to the frontend
 mic_stream = None   # global reference so we can pause during transcription
 
 # ---- Diagnostic logging ----
@@ -166,6 +168,13 @@ def transcribe():
 
 
 def ask_llm(user_text):
+    # ---- System action handling (highest priority — confirmations are time-sensitive) ----
+    action_reply = actions.handle_command(user_text)
+    if action_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": action_reply})
+        return action_reply
+
     # ---- Memory command handling ----
     memory_reply = _handle_memory_command(user_text)
     if memory_reply is not None:
