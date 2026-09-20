@@ -1,0 +1,41 @@
+# ============================================================
+# ROSE — .gitignore
+# ============================================================
+
+# ---- Secrets ----
+.env
+
+# ---- Virtual environment ----
+venv/
+ENV/
+env/
+
+# ---- Python bytecode ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- Piper TTS voice models (too large for GitHub) ----
+voice/*.onnx
+voice/*.onnx.json
+
+# ---- Recorded audio artifacts ----
+*.wav
+
+# ---- Settings (local-only, generated at runtime) ----
+settings.json
+
+# ---- OS / editor artifacts ----
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ---- Build / distribution ----
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ROSE</title>
+<style>
+/* ============================================================
+   ROSE — JARVIS-inspired HUD Interface
+   ============================================================ */
+:root {
+  --bg:          #04080f;
+  --panel:       rgba(8,18,32,0.72);
+  --panel-border:rgba(62,230,255,0.07);
+  --line:        rgba(62,230,255,0.10);
+  --cyan:        #3ee6ff;
+  --cyan-dim:    #1a7d94;
+  --cyan-glow:   rgba(62,230,255,0.35);
+  --pink:        #ff4fa3;
+  --pink-dim:    #a83d6d;
+  --green:       #00ff88;
+  --amber:       #ffaa00;
+  --red:         #ff4444;
+  --text:        #cfe9f2;
+  --text-dim:    #6a8fa3;
+  --muted:       #3a5568;
+  --orb-color:   var(--cyan);
+  --orb-level:   0;
+}
+*,*::before,*::after{ box-sizing:border-box; margin:0; padding:0; }
+html,body{
+  height:100%; overflow:hidden;
+  background: var(--bg);
+  font-family: 'Segoe UI','SF Pro Display',-apple-system,system-ui,sans-serif;
+  color: var(--text);
+}
+/* subtle grid overlay */
+body::after{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    linear-gradient(rgba(62,230,255,0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(62,230,255,0.018) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* ---- Layout ---- */
+.stage{
+  position:relative; z-index:1;
+  display:grid;
+  grid-template-columns: 272px 1fr 290px;
+  grid-template-rows: 52px 1fr 36px;
+  gap:12px; padding:14px;
+  height:100vh; width:100vw;
+}
+
+/* ---- Top Bar ---- */
+.topbar{
+  grid-column: 1/4;
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 0 16px;
+  border-bottom:1px solid var(--line);
+}
+.brand{
+  font-size:18px; font-weight:700; letter-spacing:6px;
+  color: var(--cyan);
+  text-shadow: 0 0 12px var(--cyan-glow);
+}
+.brand span{ color: var(--pink); text-shadow: 0 0 12px rgba(255,79,163,0.4); }
+.topbar-center{
+  font-size:11px; letter-spacing:2px; color:var(--text-dim);
+  display:flex; align-items:center; gap:10px;
+}
+.conn-dot{
+  width:7px; height:7px; border-radius:50%;
+  background: var(--green); box-shadow: 0 0 6px var(--green);
+  transition: background 0.4s, box-shadow 0.4s;
+}
+.conn-dot.error{ background:var(--red); box-shadow:0 0 6px var(--red); }
+.conn-dot.booting{ background:var(--amber); box-shadow:0 0 6px var(--amber); }
+.topbar-right{
+  display:flex; align-items:center; gap:16px;
+  font-size:12px; color:var(--text-dim); letter-spacing:1px;
+}
+.settings-btn{
+  background:none; border:1px solid var(--line); border-radius:4px;
+  color:var(--text-dim); padding:4px 12px; cursor:pointer;
+  font-size:11px; letter-spacing:1px; transition: all 0.25s;
+}
+.settings-btn:hover{ border-color:var(--cyan); color:var(--cyan); }
+
+/* ---- Panels ---- */
+.panel{
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+.panel::-webkit-scrollbar{ width:4px; }
+.panel::-webkit-scrollbar-thumb{ background:var(--muted); border-radius:2px; }
+.panel-title{
+  font-size:10px; font-weight:600; letter-spacing:2.5px;
+  color: var(--cyan-dim); text-transform:uppercase;
+  margin-bottom:12px; padding-bottom:8px;
+  border-bottom:1px solid var(--line);
+}
+.panel-title:not(:first-child){ margin-top:18px; }
+
+/* ---- Left Panel: System ---- */
+.info-row{
+  display:flex; justify-content:space-between; align-items:center;
+  padding:5px 0; font-size:12px;
+}
+.info-row .label{ color:var(--text-dim); }
+.info-row .value{ color:var(--text); font-weight:500; }
+.status-badge{
+  display:inline-flex; align-items:center; gap:5px;
+  padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600;
+  letter-spacing:1px;
+}
+.status-badge.online{ background:rgba(0,255,136,0.1); color:var(--green); border:1px solid rgba(0,255,136,0.2); }
+.status-badge.error{ background:rgba(255,68,68,0.1); color:var(--red); border:1px solid rgba(255,68,68,0.2); }
+.status-badge.checking{ background:rgba(255,170,0,0.1); color:var(--amber); border:1px solid rgba(255,170,0,0.2); }
+
+/* Audio level meter */
+.meter-wrap{ margin:10px 0; }
+.meter-label{ font-size:10px; color:var(--text-dim); letter-spacing:1px; margin-bottom:4px; }
+.meter-track{
+  height:6px; border-radius:3px; background:rgba(62,230,255,0.06);
+  overflow:hidden; position:relative;
+}
+.meter-fill{
+  height:100%; border-radius:3px; width:0%;
+  background: linear-gradient(90deg, var(--cyan), var(--green) 60%, var(--amber) 80%, var(--red));
+  transition: width 0.08s ease-out;
+}
+
+/* State indicator */
+.state-display{
+  text-align:center; padding:12px 0 4px;
+}
+.state-label{
+  font-size:20px; font-weight:700; letter-spacing:4px;
+  text-transform:uppercase;
+  transition: color 0.4s;
+}
+.state-label.dormant{ color:var(--muted); }
+.state-label.listening{ color:var(--cyan); }
+.state-label.thinking{ color:var(--pink); }
+.state-label.speaking{ color:var(--green); }
+.state-sub{ font-size:10px; color:var(--text-dim); letter-spacing:1px; margin-top:4px; }
+
+/* Mood */
+.mood-row{ display:flex; align-items:center; gap:8px; margin-top:6px; }
+.mood-tag{
+  padding:2px 10px; border-radius:12px; font-size:10px; font-weight:600;
+  letter-spacing:1px; border:1px solid var(--pink); color:var(--pink);
+}
+.conf-track{ flex:1; height:4px; border-radius:2px; background:rgba(255,79,163,0.1); }
+.conf-fill{ height:100%; border-radius:2px; background:var(--pink); transition:width 0.4s; width:0%; }
+.conf-val{ font-size:10px; color:var(--text-dim); min-width:28px; text-align:right; }
+
+/* ---- Center: Orb ---- */
+.core-wrap{
+  display:flex; align-items:center; justify-content:center;
+  position:relative; min-height:0;
+}
+.orb-container{
+  position:relative; width:340px; height:340px;
+  display:flex; align-items:center; justify-content:center;
+}
+/* Rotating rings */
+.orb-ring{
+  position:absolute; border-radius:50%;
+  border:1px solid rgba(62,230,255,0.12);
+  transition: border-color 0.6s, opacity 0.6s;
+}
+.orb-ring.r1{ inset:0; border-style:dashed; animation:spin 18s linear infinite; }
+.orb-ring.r2{ inset:28px; animation:spin 13s linear infinite reverse; border-color:rgba(62,230,255,0.18); }
+.orb-ring.r3{ inset:56px; border-style:dotted; animation:spin 24s linear infinite; border-color:rgba(255,79,163,0.14); }
+/* State-driven ring colours */
+.orb-container.listening .r1{ border-color:rgba(62,230,255,0.30); }
+.orb-container.listening .r2{ border-color:rgba(62,230,255,0.40); }
+.orb-container.listening .r3{ border-color:rgba(62,230,255,0.22); }
+.orb-container.thinking .r1{ border-color:rgba(255,79,163,0.30); animation-duration:4s; }
+.orb-container.thinking .r2{ border-color:rgba(255,79,163,0.40); animation-duration:3s; }
+.orb-container.thinking .r3{ border-color:rgba(167,139,250,0.30); animation-duration:5s; }
+.orb-container.speaking .r1{ border-color:rgba(0,255,136,0.25); }
+.orb-container.speaking .r2{ border-color:rgba(0,255,136,0.35); }
+.orb-container.speaking .r3{ border-color:rgba(62,230,255,0.20); }
+
+/* Radar sweep (thinking state) */
+.radar-sweep{
+  position:absolute; inset:56px; border-radius:50%; overflow:hidden;
+  opacity:0; transition:opacity 0.5s;
+}
+.radar-sweep.active{ opacity:1; }
+.radar-sweep::after{
+  content:""; position:absolute; inset:0;
+  background:conic-gradient(from 0deg, transparent 0deg, var(--pink) 30deg, transparent 60deg);
+  animation:spin 1.6s linear infinite;
+}
+
+/* The orb itself */
+.orb-glow{
+  position:absolute; width:180px; height:180px; border-radius:50%;
+  background:radial-gradient(circle, var(--orb-color), transparent 70%);
+  opacity: calc(0.12 + var(--orb-level) * 0.35);
+  transform: scale(calc(1 + var(--orb-level) * 0.35));
+  filter:blur(24px);
+  transition: opacity 0.1s, transform 0.1s;
+  pointer-events:none;
+}
+.orb-sphere{
+  position:relative; width:140px; height:140px; border-radius:50%;
+  background:radial-gradient(circle at 38% 32%, #15354f, #080e18 72%);
+  border:1.5px solid rgba(62,230,255,0.18);
+  box-shadow:
+    0 0 calc(20px + var(--orb-level) * 50px) rgba(62,230,255, calc(0.12 + var(--orb-level) * 0.35)),
+    inset 0 0 28px rgba(62,230,255,0.08);
+  animation:breathe 3.6s ease-in-out infinite;
+  transition: border-color 0.5s, box-shadow 0.15s;
+  display:flex; align-items:center; justify-content:center;
+}
+.orb-sphere.listening{ border-color:rgba(62,230,255,0.4); }
+.orb-sphere.thinking{ border-color:rgba(255,79,163,0.35); box-shadow:0 0 30px rgba(255,79,163,0.2), inset 0 0 28px rgba(255,79,163,0.08); }
+.orb-sphere.speaking{ border-color:rgba(0,255,136,0.35); box-shadow:0 0 30px rgba(0,255,136,0.2), inset 0 0 28px rgba(0,255,136,0.08); }
+
+/* Ripple effect on state change */
+.orb-ripple{
+  position:absolute; width:140px; height:140px; border-radius:50%;
+  border:2px solid var(--orb-color); opacity:0;
+  pointer-events:none;
+}
+.orb-ripple.animate{
+  animation:ripple 0.8s ease-out forwards;
+}
+
+/* Core status text under orb */
+.core-status{
+  position:absolute; bottom:-36px;
+  font-size:11px; letter-spacing:2px; color:var(--text-dim);
+  text-align:center; width:200px;
+  transition: color 0.4s;
+}
+
+@keyframes spin{ from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes breathe{
+  0%,100%{ box-shadow:0 0 20px rgba(62,230,255,0.12), inset 0 0 28px rgba(62,230,255,0.08); }
+  50%{ box-shadow:0 0 35px rgba(62,230,255,0.22), inset 0 0 36px rgba(62,230,255,0.14); }
+}
+@keyframes ripple{
+  0%{ transform:scale(1); opacity:0.6; }
+  100%{ transform:scale(2.2); opacity:0; }
+}
+
+/* ---- Right Panel: Conversation ---- */
+.right-panel{
+  display:flex; flex-direction:column; min-height:0;
+}
+.search-wrap{
+  margin-bottom:10px; position:relative;
+}
+.search-input{
+  width:100%; padding:6px 10px 6px 28px;
+  background:rgba(62,230,255,0.04); border:1px solid var(--line);
+  border-radius:4px; color:var(--text); font-size:12px;
+  outline:none; transition:border-color 0.25s;
+}
+.search-input:focus{ border-color:var(--cyan-dim); }
+.search-input::placeholder{ color:var(--muted); }
+.search-icon{
+  position:absolute; left:9px; top:50%; transform:translateY(-50%);
+  font-size:12px; color:var(--muted); pointer-events:none;
+}
+.conv-log{
+  flex:1; overflow-y:auto; min-height:0;
+  scrollbar-width:thin; scrollbar-color:var(--muted) transparent;
+}
+.conv-log::-webkit-scrollbar{ width:4px; }
+.conv-log::-webkit-scrollbar-thumb{ background:var(--muted); border-radius:2px; }
+.conv-msg{
+  padding:8px 10px; margin-bottom:6px;
+  border-radius:4px; font-size:12px; line-height:1.5;
+  background:rgba(62,230,255,0.03);
+  border-left:2px solid var(--cyan-dim);
+  animation:fadeIn 0.3s ease;
+}
+.conv-msg.rose{ border-left-color:var(--pink); background:rgba(255,79,163,0.03); }
+.conv-sender{
+  font-size:10px; font-weight:600; letter-spacing:1px;
+  margin-bottom:2px;
+}
+.conv-msg.user .conv-sender{ color:var(--cyan); }
+.conv-msg.rose .conv-sender{ color:var(--pink); }
+.conv-text{ color:var(--text); word-wrap:break-word; }
+.conv-time{ font-size:9px; color:var(--muted); margin-top:3px; }
+.conv-empty{
+  text-align:center; padding:40px 0; color:var(--muted);
+  font-size:11px; letter-spacing:1px;
+}
+@keyframes fadeIn{ from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+/* ---- Bottom Bar ---- */
+.bottombar{
+  grid-column:1/4;
+  display:flex; align-items:center; gap:10px;
+  padding:0 12px; font-size:11px; color:var(--muted); letter-spacing:1px;
+  border-top:1px solid var(--line);
+}
+.pulse-dot{
+  width:6px; height:6px; border-radius:50%;
+  background:var(--cyan); box-shadow:0 0 6px var(--cyan);
+  animation:pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+/* ---- Settings Drawer ---- */
+.settings-backdrop{
+  position:fixed; inset:0; z-index:90;
+  background:rgba(0,0,0,0.5);
+  opacity:0; pointer-events:none;
+  transition:opacity 0.3s;
+}
+.settings-backdrop.open{ opacity:1; pointer-events:auto; }
+.settings-drawer{
+  position:fixed; left:0; top:0; bottom:0; width:340px; z-index:100;
+  background:rgba(6,14,26,0.96);
+  border-right:1px solid var(--line);
+  backdrop-filter:blur(20px);
+  transform:translateX(-100%);
+  transition:transform 0.35s cubic-bezier(0.4,0,0.2,1);
+  overflow-y:auto; padding:24px 20px;
+  scrollbar-width:thin; scrollbar-color:var(--muted) transparent;
+}
+.settings-drawer.open{ transform:translateX(0); }
+.drawer-header{
+  display:flex; justify-content:space-between; align-items:center;
+  margin-bottom:24px; padding-bottom:12px; border-bottom:1px solid var(--line);
+}
+.drawer-title{
+  font-size:13px; font-weight:600; letter-spacing:3px;
+  color:var(--cyan); text-transform:uppercase;
+}
+.drawer-close{
+  background:none; border:none; color:var(--text-dim);
+  font-size:18px; cursor:pointer; padding:4px 8px;
+  transition:color 0.2s;
+}
+.drawer-close:hover{ color:var(--text); }
+.setting-group{ margin-bottom:18px; }
+.setting-label{
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:11px; color:var(--text-dim); letter-spacing:1px;
+  margin-bottom:6px;
+}
+.setting-value{ color:var(--cyan); font-weight:600; font-size:11px; }
+.setting-slider{
+  -webkit-appearance:none; appearance:none;
+  width:100%; height:4px; border-radius:2px;
+  background:rgba(62,230,255,0.1); outline:none;
+  cursor:pointer;
+}
+.setting-slider::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none;
+  width:14px; height:14px; border-radius:50%;
+  background:var(--cyan); border:none; cursor:pointer;
+  box-shadow:0 0 6px var(--cyan-glow);
+}
+.setting-slider::-moz-range-thumb{
+  width:14px; height:14px; border-radius:50%;
+  background:var(--cyan); border:none; cursor:pointer;
+}
+.setting-select{
+  width:100%; padding:6px 10px;
+  background:rgba(62,230,255,0.04); border:1px solid var(--line);
+  border-radius:4px; color:var(--text); font-size:12px;
+  outline:none; cursor:pointer;
+}
+.setting-select:focus{ border-color:var(--cyan-dim); }
+.setting-select option{ background:#0a1526; }
+/* Toggle switch */
+.toggle-wrap{ display:flex; align-items:center; gap:10px; }
+.toggle{
+  position:relative; width:40px; height:20px;
+  background:rgba(62,230,255,0.1); border-radius:10px;
+  cursor:pointer; transition:background 0.3s;
+  border:none; padding:0;
+}
+.toggle::after{
+  content:""; position:absolute; left:2px; top:2px;
+  width:16px; height:16px; border-radius:50%;
+  background:var(--text-dim); transition:all 0.3s;
+}
+.toggle.on{ background:rgba(62,230,255,0.25); }
+.toggle.on::after{ left:22px; background:var(--cyan); box-shadow:0 0 6px var(--cyan-glow); }
+.save-btn{
+  width:100%; padding:8px; margin-top:8px;
+  background:rgba(62,230,255,0.08); border:1px solid var(--cyan-dim);
+  border-radius:4px; color:var(--cyan); font-size:12px;
+  letter-spacing:2px; cursor:pointer; transition:all 0.25s;
+  text-transform:uppercase; font-weight:600;
+}
+.save-btn:hover{ background:rgba(62,230,255,0.15); border-color:var(--cyan); }
+.save-feedback{
+  text-align:center; font-size:10px; color:var(--green);
+  letter-spacing:1px; margin-top:6px; opacity:0; transition:opacity 0.3s;
+}
+.save-feedback.show{ opacity:1; }
+
+/* ---- Boot screen ---- */
+.boot-overlay{
+  position:fixed; inset:0; z-index:200;
+  background:var(--bg);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  transition:opacity 0.6s;
+}
+.boot-overlay.hidden{ opacity:0; pointer-events:none; }
+.boot-text{
+  font-size:14px; letter-spacing:4px; color:var(--cyan-dim);
+  text-transform:uppercase;
+}
+.boot-sub{ font-size:11px; color:var(--muted); margin-top:8px; letter-spacing:2px; }
+</style>
+</head>
+<body>
+
+<!-- Boot overlay — hidden once first poll succeeds -->
+<div class="boot-overlay" id="bootOverlay">
+  <div class="boot-text">ROSE</div>
+  <div class="boot-sub">initializing systems...</div>
+</div>
+
+<!-- Settings Drawer (slides over everything) -->
+<div class="settings-backdrop" id="settingsBackdrop" onclick="toggleSettings()"></div>
+<div class="settings-drawer" id="settingsDrawer">
+  <div class="drawer-header">
+    <div class="drawer-title">Settings</div>
+    <button class="drawer-close" onclick="toggleSettings()">✕</button>
+  </div>
+
+  <div class="setting-group">
+    <div class="setting-label">Wake Sensitivity <span class="setting-value" id="val-wake">0.35</span></div>
+    <input type="range" class="setting-slider" id="set-wake" min="0.10" max="0.80" step="0.05" value="0.35">
+  </div>
+  <div class="setting-group">
+    <div class="setting-label">Silence Timeout <span class="setting-value" id="val-silence">3.0s</span></div>
+    <input type="range" class="setting-slider" id="set-silence" min="1" max="8" step="0.5" value="3">
+  </div>
+  <div class="setting-group">
+    <div class="setting-label">Inactivity Timeout <span class="setting-value" id="val-inactivity">30m</span></div>
+    <input type="range" class="setting-slider" id="set-inactivity" min="5" max="120" step="5" value="30">
+  </div>
+  <div class="setting-group">
+    <div class="setting-label">LLM Model</div>
+    <select class="setting-select" id="set-model">
+      <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant</option>
+      <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile</option>
+      <option value="llama-3.1-70b-versatile">Llama 3.1 70B Versatile</option>
+      <option value="gemma2-9b-it">Gemma 2 9B IT</option>
+    </select>
+  </div>
+  <div class="setting-group">
+    <div class="toggle-wrap">
+      <button class="toggle on" id="set-gating" onclick="this.classList.toggle('on')"></button>
+      <span style="font-size:12px;color:var(--text-dim);letter-spacing:1px;">Name Gating (requires "Rose")</span>
+    </div>
+  </div>
+  <button class="save-btn" onclick="saveSettings()">Apply Settings</button>
+  <div class="save-feedback" id="saveFeedback">✓ Settings saved</div>
+</div>
+
+<!-- Main Layout -->
+<div class="stage">
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="brand">R<span>O</span>SE</div>
+    <div class="topbar-center">
+      <div class="conn-dot" id="connDot"></div>
+      <span id="connLabel">CONNECTING</span>
+    </div>
+    <div class="topbar-right">
+      <span id="clock">--:--:--</span>
+      <button class="settings-btn" onclick="toggleSettings()">⚙ SETTINGS</button>
+    </div>
+  </div>
+
+  <!-- Left Panel: System -->
+  <div class="panel" id="leftPanel">
+    <div class="panel-title">System</div>
+    <div class="state-display">
+      <div class="state-label dormant" id="stateLabel">DORMANT</div>
+      <div class="state-sub" id="stateSub">waiting for wake signal</div>
+    </div>
+
+    <div class="panel-title">Audio Input</div>
+    <div class="meter-wrap">
+      <div class="meter-label">MIC LEVEL</div>
+      <div class="meter-track"><div class="meter-fill" id="meterFill"></div></div>
+    </div>
+    <div class="info-row"><span class="label">Device</span><span class="value" id="micDevice">—</span></div>
+
+    <div class="panel-title">System Health</div>
+    <div class="info-row"><span class="label">STT</span><span class="value" id="sttModel">—</span></div>
+    <div class="info-row"><span class="label">TTS</span><span class="value" id="ttsModel">—</span></div>
+    <div class="info-row"><span class="label">LLM</span><span class="value" id="llmModel">—</span></div>
+    <div class="info-row">
+      <span class="label">API</span>
+      <span class="status-badge checking" id="apiBadge">CHECKING</span>
+    </div>
+
+    <div class="panel-title">Session</div>
+    <div class="info-row"><span class="label">Uptime</span><span class="value" id="uptime">00:00:00</span></div>
+    <div class="info-row"><span class="label">Exchanges</span><span class="value" id="exchanges">0</span></div>
+    <div class="info-row"><span class="label">Mood</span></div>
+    <div class="mood-row">
+      <span class="mood-tag" id="moodTag">—</span>
+      <div class="conf-track"><div class="conf-fill" id="confFill"></div></div>
+      <span class="conf-val" id="confVal">0%</span>
+    </div>
+  </div>
+
+  <!-- Center: Orb -->
+  <div class="core-wrap">
+    <div class="orb-container" id="orbContainer">
+      <div class="orb-ring r1"></div>
+      <div class="orb-ring r2"></div>
+      <div class="orb-ring r3"></div>
+      <div class="radar-sweep" id="radarSweep"></div>
+      <div class="orb-glow"></div>
+      <div class="orb-sphere" id="orbSphere"></div>
+      <div class="orb-ripple" id="orbRipple"></div>
+      <div class="core-status" id="coreStatus">initializing</div>
+    </div>
+  </div>
+
+  <!-- Right Panel: Conversation -->
+  <div class="panel right-panel">
+    <div class="panel-title">Conversation</div>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input type="text" class="search-input" id="searchInput" placeholder="Search messages..." oninput="filterConversation()">
+    </div>
+    <div class="conv-log" id="convLog">
+      <div class="conv-empty" id="convEmpty">No messages yet</div>
+    </div>
+  </div>
+
+  <!-- Bottom Bar -->
+  <div class="bottombar">
+    <div class="pulse-dot"></div>
+    <span id="bottomText">ROSE companion — whistle to wake</span>
+  </div>
+
+</div>
+
+<script>
+/* ================================================================
+   ROSE Frontend Controller
+   Communicates with Python backend via pywebview API (window.pywebview.api)
+   ================================================================ */
+
+let currentState = 'booting';
+let booted = false;
+let smoothLevel = 0;
+let userScrolled = false;
+const convLog = document.getElementById('convLog');
+
+// ---- Polling loop ----
+async function startPolling() {
+  while (true) {
+    try {
+      if (!window.pywebview || !window.pywebview.api) {
+        await sleep(500); continue;
+      }
+      const result = await window.pywebview.api.poll();
+      if (!booted) {
+        document.getElementById('bootOverlay').classList.add('hidden');
+        booted = true;
+        loadSystemInfo();
+        loadSettings();
+      }
+      handleState(result.state);
+      handleEvents(result.events);
+      setConnection('ok');
+    } catch (e) {
+      setConnection('error');
+    }
+    await sleep(250);
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ---- State handling ----
+function handleState(s) {
+  // Audio level (smoothed)
+  smoothLevel += (s.audio_level - smoothLevel) * 0.3;
+  document.documentElement.style.setProperty('--orb-level', smoothLevel.toFixed(3));
+  document.getElementById('meterFill').style.width = (smoothLevel * 100).toFixed(1) + '%';
+
+  // State label
+  if (s.state !== currentState) {
+    currentState = s.state;
+    updateStateVisuals(s.state);
+  }
+
+  // Uptime
+  document.getElementById('uptime').textContent = formatTime(s.uptime);
+
+  // Exchanges
+  document.getElementById('exchanges').textContent = s.task_count;
+
+  // Mood
+  document.getElementById('moodTag').textContent = s.mood_label;
+  document.getElementById('confFill').style.width = s.mood_confidence + '%';
+  document.getElementById('confVal').textContent = s.mood_confidence + '%';
+
+  // Mic device
+  document.getElementById('micDevice').textContent = s.mic_device;
+}
+
+function updateStateVisuals(state) {
+  const orb = document.getElementById('orbContainer');
+  const sphere = document.getElementById('orbSphere');
+  const radar = document.getElementById('radarSweep');
+  const label = document.getElementById('stateLabel');
+  const sub = document.getElementById('stateSub');
+  const status = document.getElementById('coreStatus');
+  const ripple = document.getElementById('orbRipple');
+
+  // Remove old state classes
+  orb.className = 'orb-container ' + state;
+  sphere.className = 'orb-sphere ' + (state !== 'dormant' ? state : '');
+  radar.classList.toggle('active', state === 'thinking');
+
+  // State label
+  label.className = 'state-label ' + state;
+  label.textContent = state.toUpperCase();
+
+  const subs = {
+    dormant: 'waiting for wake signal',
+    listening: 'speak freely',
+    thinking: 'processing...',
+    speaking: 'responding...'
+  };
+  sub.textContent = subs[state] || '';
+  status.textContent = subs[state] || '';
+
+  // Bottom text
+  const bottoms = {
+    dormant: 'ROSE is dormant — whistle to wake',
+    listening: 'Listening...',
+    thinking: 'Thinking...',
+    speaking: 'Speaking...'
+  };
+  document.getElementById('bottomText').textContent = bottoms[state] || '';
+
+  // Ripple effect
+  ripple.classList.remove('animate');
+  void ripple.offsetWidth; // force reflow
+  ripple.classList.add('animate');
+
+  // Orb color based on state
+  const colors = { dormant:'#3a5568', listening:'#3ee6ff', thinking:'#ff4fa3', speaking:'#00ff88' };
+  document.documentElement.style.setProperty('--orb-color', colors[state] || colors.dormant);
+}
+
+// ---- Event handling ----
+function handleEvents(events) {
+  for (const ev of events) {
+    switch (ev.type) {
+      case 'message':
+        addMessage(ev.data.sender, ev.data.text, ev.data.time);
+        break;
+      case 'api_status':
+        updateApiBadge(ev.data.status);
+        break;
+    }
+  }
+}
+
+// ---- Conversation ----
+function addMessage(sender, text, time) {
+  document.getElementById('convEmpty').style.display = 'none';
+  const div = document.createElement('div');
+  const isRose = sender === 'ROSE';
+  div.className = 'conv-msg ' + (isRose ? 'rose' : 'user');
+  div.setAttribute('data-text', (sender + ' ' + text).toLowerCase());
+  div.innerHTML =
+    '<div class="conv-sender">' + escHtml(sender) + '</div>' +
+    '<div class="conv-text">' + escHtml(text) + '</div>' +
+    '<div class="conv-time">' + escHtml(time) + '</div>';
+  convLog.appendChild(div);
+
+  // Auto-scroll only if user hasn't scrolled up
+  if (!userScrolled) {
+    convLog.scrollTop = convLog.scrollHeight;
+  }
+}
+
+function filterConversation() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  const msgs = convLog.querySelectorAll('.conv-msg');
+  msgs.forEach(m => {
+    m.style.display = m.getAttribute('data-text').includes(q) ? '' : 'none';
+  });
+}
+
+// Detect user scrolling up
+convLog.addEventListener('scroll', () => {
+  const threshold = 40;
+  const atBottom = convLog.scrollHeight - convLog.scrollTop - convLog.clientHeight < threshold;
+  userScrolled = !atBottom;
+});
+
+// ---- System info (loaded once) ----
+async function loadSystemInfo() {
+  try {
+    const info = await window.pywebview.api.get_system_info();
+    document.getElementById('sttModel').textContent = info.stt_model;
+    document.getElementById('ttsModel').textContent = info.tts_model;
+    document.getElementById('llmModel').textContent = info.llm_model;
+    updateApiBadge(info.api_status);
+  } catch (e) { /* will retry on next poll */ }
+}
+
+function updateApiBadge(status) {
+  const badge = document.getElementById('apiBadge');
+  badge.className = 'status-badge ' + (status === 'connected' ? 'online' : status === 'error' ? 'error' : 'checking');
+  badge.textContent = status === 'connected' ? 'ONLINE' : status === 'error' ? 'ERROR' : 'CHECKING';
+}
+
+// ---- Connection indicator ----
+function setConnection(status) {
+  const dot = document.getElementById('connDot');
+  const label = document.getElementById('connLabel');
+  dot.className = 'conn-dot' + (status === 'error' ? ' error' : '');
+  label.textContent = status === 'ok' ? 'SYSTEMS ONLINE' : 'RECONNECTING...';
+}
+
+// ---- Settings ----
+async function loadSettings() {
+  try {
+    const s = await window.pywebview.api.get_settings();
+    document.getElementById('set-wake').value = s.wake_sensitivity;
+    document.getElementById('val-wake').textContent = s.wake_sensitivity;
+    document.getElementById('set-silence').value = s.silence_limit;
+    document.getElementById('val-silence').textContent = s.silence_limit + 's';
+    document.getElementById('set-inactivity').value = Math.round(s.inactivity_timeout / 60);
+    document.getElementById('val-inactivity').textContent = Math.round(s.inactivity_timeout / 60) + 'm';
+    document.getElementById('set-model').value = s.llm_model;
+    const gatingBtn = document.getElementById('set-gating');
+    gatingBtn.classList.toggle('on', s.name_gating === true || s.name_gating === 'true');
+  } catch (e) {}
+}
+
+function saveSettings() {
+  const changes = {
+    wake_sensitivity: parseFloat(document.getElementById('set-wake').value),
+    silence_limit: parseFloat(document.getElementById('set-silence').value),
+    inactivity_timeout: parseInt(document.getElementById('set-inactivity').value) * 60,
+    llm_model: document.getElementById('set-model').value,
+    name_gating: document.getElementById('set-gating').classList.contains('on'),
+  };
+  window.pywebview.api.save_settings(JSON.stringify(changes)).then(r => {
+    const fb = document.getElementById('saveFeedback');
+    fb.textContent = r.ok ? '✓ Settings saved' : '✗ Error: ' + r.error;
+    fb.classList.add('show');
+    setTimeout(() => fb.classList.remove('show'), 2000);
+    if (r.ok) loadSystemInfo(); // refresh system info if model changed
+  });
+}
+
+function toggleSettings() {
+  document.getElementById('settingsDrawer').classList.toggle('open');
+  document.getElementById('settingsBackdrop').classList.toggle('open');
+}
+
+// Slider live value display
+document.getElementById('set-wake').addEventListener('input', e => {
+  document.getElementById('val-wake').textContent = parseFloat(e.target.value).toFixed(2);
+});
+document.getElementById('set-silence').addEventListener('input', e => {
+  document.getElementById('val-silence').textContent = parseFloat(e.target.value).toFixed(1) + 's';
+});
+document.getElementById('set-inactivity').addEventListener('input', e => {
+  document.getElementById('val-inactivity').textContent = e.target.value + 'm';
+});
+
+// ---- Clock ----
+function updateClock() {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  document.getElementById('clock').textContent = h + ':' + m + ':' + s;
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ---- Utility ----
+function formatTime(totalSec) {
+  const h = String(Math.floor(totalSec / 3600)).padStart(2, '0');
+  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
+  const s = String(totalSec % 60).padStart(2, '0');
+  return h + ':' + m + ':' + s;
+}
+function escHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ---- Start ----
+startPolling();
+</script>
+</body>
+</html>
