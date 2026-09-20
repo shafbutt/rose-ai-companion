@@ -24,6 +24,7 @@ from memory import MemoryManager
 from system_actions import ActionManager
 from system_info import handle_system_query
 from permissions import PermissionManager
+from location_weather import handle_weather_query
 
 load_dotenv()
 try:
@@ -359,6 +360,13 @@ def ask_llm(user_text):
         conversation_history.append({"role": "user", "content": user_text})
         conversation_history.append({"role": "assistant", "content": sys_reply})
         return sys_reply
+
+    # ---- Weather / location query handling (requires permission) ----
+    weather_reply = handle_weather_query(user_text, permission_checker=perm_manager.is_allowed)
+    if weather_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": weather_reply})
+        return weather_reply
 
     # ---- Inject relevant memories into system prompt ----
     memory_context = memory.format_for_prompt(user_text, max_tokens=400)
