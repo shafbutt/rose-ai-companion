@@ -25,6 +25,13 @@ voice/*.onnx.json
 # ---- Settings (local-only, generated at runtime) ----
 settings.json
 
+# ---- Debug / log artifacts ----
+crash_log.txt
+rose_stdout*.log
+
+# ---- Memory database (local-only) ----
+rose_memory.db
+
 # ---- OS / editor artifacts ----
 Thumbs.db
 desktop.ini

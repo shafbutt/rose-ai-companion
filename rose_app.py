@@ -4,10 +4,14 @@ os.environ["OPENBLAS_NUM_THREADS"] = "4"
 
 import time
 import threading
+import logging
+import traceback
+import sys
+import psutil
 import numpy as np
 import sounddevice as sd
 import wave
-import whisper
+from faster_whisper import WhisperModel
 import webview
 
 from groq import Groq
@@ -28,16 +32,32 @@ except Exception as e:
 buffer_lock = threading.Lock()
 audio_buffer = []   # plain list of int16 samples
 ui = UIBridge()     # communication bridge to the frontend
+mic_stream = None   # global reference so we can pause during transcription
+
+# ---- Diagnostic logging ----
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('crash_log.txt', mode='w'),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+logger = logging.getLogger('rose')
+logger.info("ROSE starting up — diagnostic logging enabled")
 
 
 def audio_callback(indata, frames, time_info, status):
-    with buffer_lock:
-        audio_buffer.extend(indata[:, 0].tolist())
-        max_len = settings.get('sample_rate') * settings.get('buffer_seconds')
-        if len(audio_buffer) > max_len:
-            del audio_buffer[:len(audio_buffer) - max_len]
-    # track live audio level for the UI meter
-    ui.set_audio_level(float(np.max(np.abs(indata))) / 32768.0)
+    try:
+        with buffer_lock:
+            audio_buffer.extend(indata[:, 0].tolist())
+            max_len = settings.get('sample_rate') * settings.get('buffer_seconds')
+            if len(audio_buffer) > max_len:
+                del audio_buffer[:len(audio_buffer) - max_len]
+        # track live audio level for the UI meter
+        ui.set_audio_level(float(np.max(np.abs(indata))) / 32768.0)
+    except Exception as e:
+        logger.error(f"audio_callback exception: {e}\n{traceback.format_exc()}")
 
 
 def get_recent_audio(seconds):
@@ -50,7 +70,7 @@ def get_recent_audio(seconds):
 STEP = 0.2   # how often we check the buffer, in seconds
 
 conversation_history = []
-whisper_model = whisper.load_model("small")
+whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 piper_voice = PiperVoice.load("voice/en_US-amy-medium.onnx")
 
 EXCITED_WORDS = ["hey!", "yay", "wow", "awesome", "great", "haha", "exciting", "!"]
@@ -117,29 +137,56 @@ def record_audio():
 
 
 def transcribe():
+    global mic_stream
     try:
-        result = whisper_model.transcribe("input.wav", language="en")
-        return result["text"].strip()
+        # STOP the mic stream before Whisper — PyTorch's threading conflicts
+        # with PortAudio's real-time callback and causes a segfault in python314.dll
+        if mic_stream and mic_stream.active:
+            mic_stream.stop()
+            logger.debug("Mic stream STOPPED before transcription")
+
+        logger.info("Faster-Whisper transcribe starting...")
+        segments, info = whisper_model.transcribe("input.wav", language="en", beam_size=5)
+        text = " ".join(segment.text for segment in segments).strip()
+        logger.info(f"Transcribe done (audio {info.duration:.1f}s): '{text[:60]}...' " if len(text) > 60 else f"Transcribe done (audio {info.duration:.1f}s): '{text}'")
+        return text
     except Exception as e:
-        print(f"[ROSE] Transcription error: {e}")
+        logger.error(f"Transcription error: {e}")
         return ""
+    finally:
+        # RESTART the mic stream after transcription
+        if mic_stream:
+            try:
+                mic_stream.start()
+                logger.debug("Mic stream RESTARTED after transcription")
+            except Exception as e:
+                logger.error(f"Failed to restart mic stream: {e}")
 
 
 def ask_llm(user_text):
     conversation_history.append({"role": "user", "content": user_text})
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
-    try:
-        response = groq_client.chat.completions.create(
-            model=settings.get('llm_model'), messages=messages
-        )
-        reply = response.choices[0].message.content
-        conversation_history.append({"role": "assistant", "content": reply})
-        return reply
-    except Exception as e:
-        print(f"[ROSE] LLM error: {e}")
-        conversation_history.pop()  # remove user msg to keep history consistent
-        ui.set_api_status("error")
-        return "Sorry, I'm having trouble connecting right now."
+    # Keep only last 6 messages to stay within token limits
+    recent = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + recent
+    # Retry up to 2 times on 429 (rate limit) with short delay
+    for attempt in range(3):
+        try:
+            response = groq_client.chat.completions.create(
+                model=settings.get('llm_model'), messages=messages, max_tokens=150
+            )
+            reply = response.choices[0].message.content
+            conversation_history.append({"role": "assistant", "content": reply})
+            ui.set_api_status("connected")
+            return reply
+        except Exception as e:
+            logger.warning(f"LLM attempt {attempt+1}/3 failed: {e}")
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))  # 2s, then 4s
+                continue
+            logger.error(f"LLM all 3 attempts failed: {e}")
+            conversation_history.pop()
+            ui.set_api_status("error")
+            return "Sorry, I'm having trouble connecting right now."
 
 
 def speak(text):
@@ -275,32 +322,89 @@ def active_session(ui):
         ui.set_state("listening")
 
 
+# ---------- Protected runner (catches exceptions in daemon thread) ----------
+
+def _protected(fn, name):
+    """Run fn(ui), log + re-raise any exception so the daemon thread doesn't die silently."""
+    try:
+        logger.debug(f"[{name}] entering")
+        fn(ui)
+    except Exception as e:
+        logger.error(f"[{name}] CRASH: {e}")
+        logger.error(traceback.format_exc())
+        raise
+
+
+# ---------- Heartbeat monitor ----------
+
+def _heartbeat():
+    """Logs state + memory every 15s so we can see the last thing before a crash."""
+    while True:
+        try:
+            time.sleep(15)
+            proc = psutil.Process()
+            mem_mb = proc.memory_info().rss / 1024 / 1024
+            with buffer_lock:
+                buf_len = len(audio_buffer)
+            logger.info(
+                f"HEARTBEAT | state={ui._state} | mem={mem_mb:.1f}MB"
+                f" | buf={buf_len}/{settings.get('sample_rate') * settings.get('buffer_seconds')}"
+                f" | conv={len(conversation_history)} | alive=True"
+            )
+        except Exception as e:
+            logger.error(f"Heartbeat error: {e}")
+
+
 # ---------- Main loop: alternates between dormant and active ----------
 
 def rose_loop(ui):
+    logger.info("rose_loop started")
     while True:
-        wait_for_wake(ui)
+        _protected(wait_for_wake, "wait_for_wake")
 
         greeting = "Hello sir! I've been activated."
         ui.emit_message("ROSE", greeting)
         ui.set_state("speaking")
         speak(greeting)
 
-        active_session(ui)
+        _protected(active_session, "active_session")
 
 
 def start_backend(window):
+    logger.info("start_backend called by pywebview")
     sr = settings.get('sample_rate')
-    stream = sd.InputStream(
-        samplerate=sr, channels=1, dtype='int16',
-        device=settings.get('device_index'), blocksize=int(sr * 0.1),
-        callback=audio_callback
-    )
-    stream.start()
 
-    thread = threading.Thread(target=rose_loop, args=(ui,), daemon=True)
+    global mic_stream
+    try:
+        mic_stream = sd.InputStream(
+            samplerate=sr, channels=1, dtype='int16',
+            device=settings.get('device_index'), blocksize=int(sr * 0.1),
+            callback=audio_callback
+        )
+        mic_stream.start()
+        logger.info(f"Audio stream started (device={settings.get('device_index')}, sr={sr})")
+    except Exception as e:
+        logger.error(f"Failed to start audio stream: {e}\n{traceback.format_exc()}")
+        raise
+
+    # heartbeat monitor
+    hb = threading.Thread(target=_heartbeat, daemon=True, name="heartbeat")
+    hb.start()
+    logger.info("Heartbeat thread started")
+
+    # backend loop
+    thread = threading.Thread(target=rose_loop, args=(ui,), daemon=True, name="rose_loop")
     thread.start()
+    logger.info("Backend daemon thread started")
+
+    # log when window is closed
+    def on_closed():
+        logger.warning("WINDOW CLOSED by user or system")
+    window.events.closed += on_closed
 
 
+logger.info("Creating pywebview window")
 window = webview.create_window("ROSE", "rose_interface.html", width=1100, height=650, js_api=ui)
-webview.start(start_backend, window)
+logger.info("Starting pywebview with debug=True")
+webview.start(start_backend, window, debug=True)
+logger.warning("webview.start() returned — application shutting down")

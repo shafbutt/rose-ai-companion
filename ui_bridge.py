@@ -89,7 +89,7 @@ class UIBridge:
 
     def get_system_info(self):
         return {
-            "stt_model": "openai-whisper small",
+            "stt_model": "faster-whisper base",
             "tts_model": "piper en_US-amy-medium",
             "llm_model": settings.get("llm_model"),
             "api_status": self._api_status,
