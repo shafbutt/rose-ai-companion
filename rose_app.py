@@ -77,15 +77,115 @@ conversation_history = []
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 piper_voice = PiperVoice.load("voice/en_US-amy-medium.onnx")
 
-EXCITED_WORDS = ["hey!", "yay", "wow", "awesome", "great", "haha", "exciting", "!"]
-TIRED_WORDS = ["tired", "sorry", "sad", "rough", "sigh", "hmm", "long day"]
+# ---- Mood detection: analyses both USER text and ROSE reply ----
+# Each mood has weighted keywords. Higher weight = stronger signal.
+_MOOD_KEYWORDS = {
+    "excited": {
+        "words": {"yay": 3, "wow": 2, "awesome": 3, "amazing": 3, "incredible": 3,
+                  "exciting": 3, "omg": 3, "can't wait": 3, "so pumped": 3,
+                  "thrilled": 3, "ecstatic": 3, "yesss": 3, "woohoo": 3, "!": 1},
+        "valence": "positive", "energy": "high",
+    },
+    "happy": {
+        "words": {"happy": 3, "glad": 2, "great": 2, "good": 1, "nice": 2,
+                  "love": 2, "fun": 2, "cool": 1, "haha": 2, "lol": 1,
+                  "hehe": 2, "smile": 2, "wonderful": 3, "fantastic": 3,
+                  "blessed": 2, "grateful": 2, "enjoy": 2, "best": 2},
+        "valence": "positive", "energy": "medium",
+    },
+    "stressed": {
+        "words": {"stressed": 3, "stress": 2, "overwhelmed": 3, "anxiety": 3,
+                  "anxious": 3, "worried": 2, "panic": 3, "freaking": 2,
+                  "deadline": 2, "pressure": 2, "can't handle": 3,
+                  "too much": 2, "exhausted": 2, "burnt out": 3, "burnout": 3,
+                  "insomnia": 2, "no sleep": 2},
+        "valence": "negative", "energy": "high",
+    },
+    "sad": {
+        "words": {"sad": 3, "depressed": 3, "unhappy": 3, "miserable": 3,
+                  "lonely": 3, "alone": 2, "cry": 2, "crying": 3,
+                  "heartbroken": 3, "miss": 2, "lost": 1, "hopeless": 3,
+                  "down": 1, "upset": 2, "hurt": 2, "pain": 2,
+                  "rough day": 3, "bad day": 2, "not good": 1},
+        "valence": "negative", "energy": "low",
+    },
+    "angry": {
+        "words": {"angry": 3, "furious": 3, "pissed": 3, "mad": 2,
+                  "hate": 2, "annoyed": 2, "irritated": 2, "frustrated": 3,
+                  "unfair": 2, "idiot": 2, "stupid": 2, "wtf": 2,
+                  "damn": 1, "hell": 1, "sick of": 3, "done with": 2},
+        "valence": "negative", "energy": "high",
+    },
+    "tired": {
+        "words": {"tired": 3, "exhausted": 3, "sleepy": 3, "drowsy": 3,
+                  "yawn": 2, "bed": 1, "sleep": 1, "long day": 3,
+                  "drained": 3, "worn out": 3, "running on empty": 3,
+                  "need sleep": 2, "so sleepy": 3},
+        "valence": "neutral", "energy": "low",
+    },
+    "flirty": {
+        "words": {"cute": 2, "handsome": 3, "beautiful": 2, "pretty": 2,
+                  "miss you": 2, "kiss": 3, "hug": 2, "love you": 3,
+                  "date": 2, "crush": 3, "babe": 3, "baby": 1,
+                  "sweetheart": 3, "darling": 3},
+        "valence": "positive", "energy": "medium",
+    },
+}
+
+# Smoothing: blend with previous mood to avoid jarring jumps
+_mood_history = {"label": "not yet detected", "confidence": 0}
+
+
+def detect_user_mood(user_text: str, reply_text: str = ""):
+    """
+    Detect the user's emotional state from their text (+ optional reply context).
+    Returns (label, confidence) where confidence is 0-100.
+    """
+    combined = (user_text + " " + reply_text).lower()
+    scores = {}
+
+    for mood, data in _MOOD_KEYWORDS.items():
+        score = 0
+        for word, weight in data["words"].items():
+            if word in combined:
+                score += weight
+            # Bonus for multiple occurrences
+            count = combined.count(word)
+            if count > 1:
+                score += weight * 0.3 * (count - 1)
+        scores[mood] = score
+
+    # Find the dominant mood
+    if not scores or max(scores.values()) == 0:
+        return "neutral", 40
+
+    best_mood = max(scores, key=scores.get)
+    raw_score = scores[best_mood]
+    # Normalize: score of 3+ = moderate confidence, 6+ = high
+    confidence = min(int(raw_score * 12), 95)
+    confidence = max(confidence, 30)  # floor at 30% if any keyword matched
+
+    # Blend with previous mood for stability (70% new, 30% old)
+    global _mood_history
+    if _mood_history["label"] == best_mood:
+        # Same mood as before — boost confidence
+        confidence = min(confidence + 10, 95)
+    elif _mood_history["label"] != "not yet detected" and confidence < 50:
+        # Low confidence new mood — lean toward previous
+        confidence = max(confidence - 10, 25)
+
+    _mood_history = {"label": best_mood, "confidence": confidence}
+    return best_mood, confidence
 
 
 def get_mood_config(text):
+    """Return Piper SynthesisConfig to modulate ROSE's voice based on mood context."""
     lower = text.lower()
-    if any(word in lower for word in EXCITED_WORDS):
+    # Excited/energetic voice
+    if any(w in lower for w in ["yay", "wow", "awesome", "amazing", "exciting", "haha", "!"]):
         return SynthesisConfig(length_scale=0.9, noise_scale=0.8)
-    elif any(word in lower for word in TIRED_WORDS):
+    # Tired/calm voice
+    elif any(w in lower for w in ["tired", "sad", "sorry", "rough", "sigh", "hmm", "long day"]):
         return SynthesisConfig(length_scale=1.15, noise_scale=0.5)
     else:
         return SynthesisConfig(length_scale=1.0, noise_scale=0.667)
@@ -462,23 +562,9 @@ def active_session(ui):
         task_count += 1
         ui.set_task_count(task_count)
 
-        matched_excited = sum(1 for w in EXCITED_WORDS if w in reply.lower())
-        matched_tired = sum(1 for w in TIRED_WORDS if w in reply.lower())
-
-        if matched_excited > 0:
-            mood_label = "excited"
-            confidence = min(60 + matched_excited * 15, 95)
-            face_state = "excited"
-        elif matched_tired > 0:
-            mood_label = "a bit tired"
-            confidence = min(60 + matched_tired * 15, 95)
-            face_state = "tired"
-        else:
-            mood_label = "doing okay"
-            confidence = 65
-            face_state = "calm"
-
-        ui.set_mood(mood_label, confidence)
+        # ---- Better mood detection: analyses user text + reply ----
+        mood_label, mood_confidence = detect_user_mood(user_text, reply)
+        ui.set_mood(mood_label, mood_confidence)
         ui.set_state("speaking")
         speak(reply)
 
