@@ -24,6 +24,7 @@ voice/*.onnx.json
 
 # ---- Settings (local-only, generated at runtime) ----
 settings.json
+permissions.json
 
 # ---- Debug / log artifacts ----
 crash_log.txt

@@ -23,6 +23,7 @@ from ui_bridge import UIBridge
 from memory import MemoryManager
 from system_actions import ActionManager
 from system_info import handle_system_query
+from permissions import PermissionManager
 
 load_dotenv()
 try:
@@ -35,7 +36,8 @@ except Exception as e:
 buffer_lock = threading.Lock()
 audio_buffer = []   # plain list of int16 samples
 memory = MemoryManager()  # persistent SQLite memory
-actions = ActionManager()  # system actions (shutdown, lock, open apps)
+perm_manager = PermissionManager()  # permission & security center
+actions = ActionManager(permission_checker=perm_manager.is_allowed)  # system actions (shutdown, lock, open apps)
 
 # ---- Error resilience tracking (must be before UIBridge) ----
 _error_state = {
@@ -49,7 +51,7 @@ _error_state = {
     "api_healthy": True,
 }
 
-ui = UIBridge(memory_manager=memory, groq=groq_client, action_manager=actions, error_state=_error_state)  # communication bridge to the frontend
+ui = UIBridge(memory_manager=memory, groq=groq_client, action_manager=actions, error_state=_error_state, permission_manager=perm_manager)  # communication bridge to the frontend
 mic_stream = None   # global reference so we can pause during transcription
 
 # ---- Diagnostic logging ----

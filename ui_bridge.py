@@ -18,7 +18,7 @@ from config import settings
 class UIBridge:
     """Exposed to the frontend as `window.pywebview.api`."""
 
-    def __init__(self, memory_manager=None, groq=None, action_manager=None, error_state=None):
+    def __init__(self, memory_manager=None, groq=None, action_manager=None, error_state=None, permission_manager=None):
         self._events = []
         self._lock = threading.Lock()
         self._state = "booting"
@@ -35,6 +35,7 @@ class UIBridge:
         self._groq = groq               # injected reference — no circular import
         self._actions = action_manager   # injected reference — no circular import
         self._error_state = error_state or {}  # injected reference — no circular import
+        self._permissions = permission_manager  # injected reference — no circular import
 
     # ------------------------------------------------------------------ #
     #  Backend → UI  (called from the daemon thread)
@@ -211,6 +212,30 @@ class UIBridge:
             "consecutive_tts_errors": es.get("consecutive_tts_errors", 0),
             "consecutive_stt_empty": es.get("consecutive_stt_empty", 0),
         }
+
+    # ------------------------------------------------------------------ #
+    #  Permissions  (frontend → backend)
+    # ------------------------------------------------------------------ #
+
+    def get_permissions(self):
+        """Return all permissions with states and descriptions."""
+        if not self._permissions:
+            return []
+        return self._permissions.get_all()
+
+    def set_permission(self, name, state):
+        """Set a permission state. Returns {ok: True/False}."""
+        if not self._permissions:
+            return {"ok": False, "error": "Permission manager not available"}
+        ok = self._permissions.set_permission(name, state)
+        return {"ok": ok}
+
+    def reset_permissions(self):
+        """Reset all permissions to defaults."""
+        if not self._permissions:
+            return {"ok": False}
+        self._permissions.reset_to_defaults()
+        return {"ok": True}
 
     # ------------------------------------------------------------------ #
     #  Poll endpoint  (called by frontend every ~250 ms)

@@ -147,12 +147,13 @@ _CANCEL_PATTERNS = [
 class ActionManager:
     """Manages system actions with whitelist + confirmation flow."""
 
-    def __init__(self):
+    def __init__(self, permission_checker=None):
         self._lock = threading.Lock()
         self._pending = None       # {"action": str, "args": dict, "expires": float} or None
         self._last_result = None   # {"ok": bool, "message": str}
         self._folders = _get_known_folders()
         self._log = []             # last 10 actions for UI
+        self._perm_check = permission_checker  # optional: callable(name) -> bool
 
     # ------------------------------------------------------------------ #
     #  Public API
@@ -199,6 +200,10 @@ class ActionManager:
         text = user_text.strip()
         if not text:
             return None
+
+        # 0) Permission check
+        if self._perm_check and not self._perm_check("system_actions"):
+            return "I don't have permission to perform system actions. Please enable it in Settings."
 
         # 1) Check if this is a confirmation/cancellation of a pending action
         pending_reply = self._check_confirmation(text)
