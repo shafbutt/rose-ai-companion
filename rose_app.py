@@ -22,6 +22,7 @@ from config import settings, INITIAL_PROMPT, SYSTEM_PROMPT
 from ui_bridge import UIBridge
 from memory import MemoryManager
 from system_actions import ActionManager
+from system_info import handle_system_query
 
 load_dotenv()
 try:
@@ -349,6 +350,13 @@ def ask_llm(user_text):
         conversation_history.append({"role": "user", "content": user_text})
         conversation_history.append({"role": "assistant", "content": memory_reply})
         return memory_reply
+
+    # ---- System information / time query handling (no API call needed) ----
+    sys_reply = handle_system_query(user_text)
+    if sys_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": sys_reply})
+        return sys_reply
 
     # ---- Inject relevant memories into system prompt ----
     memory_context = memory.format_for_prompt(user_text, max_tokens=400)
