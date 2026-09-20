@@ -483,6 +483,9 @@ body::after{
       <span id="connLabel">CONNECTING</span>
     </div>
     <div class="topbar-right">
+      <span id="muteIndicator" style="font-size:11px;letter-spacing:1px;margin-right:12px;">🔊 MIC ACTIVE</span>
+      <button class="mute-btn" id="muteBtn" onclick="toggleMute()" style="background:none;border:1px solid var(--line);color:var(--text-dim);font-size:11px;letter-spacing:1px;padding:4px 10px;border-radius:4px;cursor:pointer;margin-right:8px;">MUTE</button>
+      <button class="fullscreen-btn" onclick="toggleFullscreen()" style="background:none;border:1px solid var(--line);color:var(--text-dim);font-size:11px;letter-spacing:1px;padding:4px 10px;border-radius:4px;cursor:pointer;margin-right:8px;">⛶ FULL</button>
       <span id="clock">--:--:--</span>
       <button class="settings-btn" onclick="toggleSettings()">⚙ SETTINGS</button>
     </div>
@@ -643,6 +646,18 @@ function handleState(s) {
 
   // Mic device
   document.getElementById('micDevice').textContent = s.mic_device;
+
+  // Mute state
+  const muteIndicator = document.getElementById('muteIndicator');
+  if (muteIndicator) {
+    if (s.mic_muted) {
+      muteIndicator.textContent = '🔇 MIC MUTED';
+      muteIndicator.style.color = 'var(--red)';
+    } else {
+      muteIndicator.textContent = '🔊 MIC ACTIVE';
+      muteIndicator.style.color = 'var(--green)';
+    }
+  }
 }
 
 function updateStateVisuals(state) {
@@ -667,7 +682,8 @@ function updateStateVisuals(state) {
     dormant: 'waiting for wake signal',
     listening: 'speak freely',
     thinking: 'processing...',
-    speaking: 'responding...'
+    speaking: 'responding...',
+    muted: 'microphone muted'
   };
   sub.textContent = subs[state] || '';
   status.textContent = subs[state] || '';
@@ -677,7 +693,8 @@ function updateStateVisuals(state) {
     dormant: 'ROSE is dormant — whistle to wake',
     listening: 'Listening...',
     thinking: 'Thinking...',
-    speaking: 'Speaking...'
+    speaking: 'Speaking...',
+    muted: 'Microphone muted — click to unmute'
   };
   document.getElementById('bottomText').textContent = bottoms[state] || '';
 
@@ -687,7 +704,7 @@ function updateStateVisuals(state) {
   ripple.classList.add('animate');
 
   // Orb color based on state
-  const colors = { dormant:'#3a5568', listening:'#3ee6ff', thinking:'#ff4fa3', speaking:'#00ff88' };
+  const colors = { dormant:'#3a5568', listening:'#3ee6ff', thinking:'#ff4fa3', speaking:'#00ff88', muted:'#ff4444' };
   document.documentElement.style.setProperty('--orb-color', colors[state] || colors.dormant);
 }
 
@@ -929,6 +946,32 @@ function escHtml(str) {
   const d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+// ---- Mute toggle ----
+async function toggleMute() {
+  try {
+    const result = await window.pywebview.api.toggle_mute();
+    const btn = document.getElementById('muteBtn');
+    if (result.muted) {
+      btn.textContent = 'UNMUTE';
+      btn.style.color = 'var(--red)';
+      btn.style.borderColor = 'var(--red)';
+    } else {
+      btn.textContent = 'MUTE';
+      btn.style.color = 'var(--text-dim)';
+      btn.style.borderColor = 'var(--line)';
+    }
+  } catch (e) { console.error('Mute toggle failed:', e); }
+}
+
+// ---- Fullscreen toggle ----
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(e => console.error(e));
+  } else {
+    document.exitFullscreen().catch(e => console.error(e));
+  }
 }
 
 // ---- Start ----
