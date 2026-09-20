@@ -430,6 +430,28 @@ def _detect_category(content: str):
     return "fact", 5
 
 
+# ---- Protected identity: prevent overwriting ROSE's core identity ----
+_IDENTITY_PROTECTION_KEYWORDS = [
+    "your creator", "your name", "you are called", "who made you",
+    "who created you", "your name is", "you were created by",
+    "your real name", "your actual name",
+]
+
+def _is_identity_override_attempt(text: str) -> bool:
+    """Check if the user is trying to change ROSE's protected creator identity."""
+    lower = text.lower()
+    # Check for attempts to redefine ROSE's identity
+    for keyword in _IDENTITY_PROTECTION_KEYWORDS:
+        if keyword in lower:
+            # If they're asking a question, it's fine
+            if lower.strip().endswith("?"):
+                return False
+            # If they're making a statement about ROSE's identity, block it
+            if any(w in lower for w in ["is ", "was ", "are ", "were "]):
+                return True
+    return False
+
+
 # Messages too short or generic to bother saving
 _TRIVIAL_MESSAGES = frozenset([
     "hi", "hey", "hello", "yo", "sup", "yeah", "yep", "yup", "no", "nope",
@@ -505,6 +527,9 @@ def _handle_memory_command(user_text: str):
             content = m.group(2).strip().rstrip(".").strip()
             if not content:
                 return "Sure, what should I remember?"
+            # Check for identity override attempt
+            if _is_identity_override_attempt(content):
+                return "My creator identity is protected and can't be changed through conversation."
             # Detect category
             category, importance = _detect_category(content)
             if memory.store(content, category=category, importance=importance):
