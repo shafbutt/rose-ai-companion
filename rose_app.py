@@ -25,6 +25,7 @@ from system_actions import ActionManager
 from system_info import handle_system_query
 from permissions import PermissionManager
 from location_weather import handle_weather_query
+from web_search import handle_web_search_query
 
 load_dotenv()
 try:
@@ -367,6 +368,13 @@ def ask_llm(user_text):
         conversation_history.append({"role": "user", "content": user_text})
         conversation_history.append({"role": "assistant", "content": weather_reply})
         return weather_reply
+
+    # ---- Web search / YouTube handling (requires permission) ----
+    search_reply = handle_web_search_query(user_text, permission_checker=perm_manager.is_allowed)
+    if search_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": search_reply})
+        return search_reply
 
     # ---- Inject relevant memories into system prompt ----
     memory_context = memory.format_for_prompt(user_text, max_tokens=400)
