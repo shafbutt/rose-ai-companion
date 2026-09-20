@@ -35,7 +35,20 @@ buffer_lock = threading.Lock()
 audio_buffer = []   # plain list of int16 samples
 memory = MemoryManager()  # persistent SQLite memory
 actions = ActionManager()  # system actions (shutdown, lock, open apps)
-ui = UIBridge(memory_manager=memory, groq=groq_client, action_manager=actions)  # communication bridge to the frontend
+
+# ---- Error resilience tracking (must be before UIBridge) ----
+_error_state = {
+    "consecutive_llm_errors": 0,
+    "consecutive_stt_empty": 0,
+    "consecutive_tts_errors": 0,
+    "total_llm_errors": 0,
+    "total_llm_successes": 0,
+    "last_error_time": 0,
+    "last_error_type": "",
+    "api_healthy": True,
+}
+
+ui = UIBridge(memory_manager=memory, groq=groq_client, action_manager=actions, error_state=_error_state)  # communication bridge to the frontend
 mic_stream = None   # global reference so we can pause during transcription
 
 # ---- Diagnostic logging ----
@@ -267,7 +280,61 @@ def transcribe():
                 logger.error(f"Failed to restart mic stream: {e}")
 
 
+# ---- Error resilience: contextual fallback replies ----
+_FALLBACK_REPLIES = [
+    "Hmm, I'm having a bit of trouble connecting right now. Give me a sec?",
+    "Oops, my brain's being a bit slow. Try saying that again?",
+    "I'm having a little connection hiccup — one moment?",
+    "Sorry, I zoned out for a sec. What were you saying?",
+    "Having a tiny tech moment — can you repeat that?",
+]
+# If many consecutive errors, escalate the message
+_PERSISTENT_ERROR_REPLIES = [
+    "I'm really struggling to connect right now. It might be a network issue on my end.",
+    "Still having connection trouble. I can hear you but can't think of a reply!",
+    "Okay this is embarrassing — I'm completely offline right now.",
+]
+
+
+def _get_fallback_reply(user_text: str) -> str:
+    """Return a contextual fallback when the LLM API is down."""
+    import random
+    consecutive = _error_state["consecutive_llm_errors"]
+    if consecutive >= 3:
+        # Persistent failure — escalate
+        idx = min(consecutive - 3, len(_PERSISTENT_ERROR_REPLIES) - 1)
+        return _PERSISTENT_ERROR_REPLIES[idx]
+    # Normal one-off failure — vary the response
+    return random.choice(_FALLBACK_REPLIES)
+
+
+def _check_api_recovery() -> bool:
+    """Quick lightweight check to see if the API has recovered."""
+    if _error_state["api_healthy"]:
+        return True
+    # Only check if at least 10 seconds since last error
+    if time.time() - _error_state["last_error_time"] < 10:
+        return False
+    try:
+        groq_client.chat.completions.create(
+            model=settings.get('llm_model'),
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+        _error_state["api_healthy"] = True
+        _error_state["consecutive_llm_errors"] = 0
+        ui.set_api_status("connected")
+        logger.info("API recovered successfully")
+        return True
+    except Exception:
+        return False
+
+
 def ask_llm(user_text):
+    # ---- Auto-recovery: check if API has recovered before trying ----
+    if not _error_state["api_healthy"]:
+        _check_api_recovery()
+
     # ---- System action handling (highest priority — confirmations are time-sensitive) ----
     action_reply = actions.handle_command(user_text)
     if action_reply is not None:
@@ -302,6 +369,10 @@ def ask_llm(user_text):
             reply = response.choices[0].message.content
             conversation_history.append({"role": "assistant", "content": reply})
             ui.set_api_status("connected")
+            # Success — reset error counters
+            _error_state["consecutive_llm_errors"] = 0
+            _error_state["total_llm_successes"] += 1
+            _error_state["api_healthy"] = True
             return reply
         except Exception as e:
             logger.warning(f"LLM attempt {attempt+1}/3 failed: {e}")
@@ -311,7 +382,12 @@ def ask_llm(user_text):
             logger.error(f"LLM all 3 attempts failed: {e}")
             conversation_history.pop()
             ui.set_api_status("error")
-            return "Sorry, I'm having trouble connecting right now."
+            _error_state["consecutive_llm_errors"] += 1
+            _error_state["total_llm_errors"] += 1
+            _error_state["last_error_time"] = time.time()
+            _error_state["last_error_type"] = str(e)[:80]
+            _error_state["api_healthy"] = False
+            return _get_fallback_reply(user_text)
 
 
 # ---------- Memory command detection ----------
@@ -450,13 +526,20 @@ def _handle_memory_command(user_text: str):
 
 
 def speak(text):
-    syn_config = get_mood_config(text)
-    audio_chunks = []
-    for chunk in piper_voice.synthesize(text, syn_config=syn_config):
-        audio_chunks.append(chunk.audio_int16_array)
-    audio_array = np.concatenate(audio_chunks)
-    sd.play(audio_array, samplerate=piper_voice.config.sample_rate)
-    sd.wait()
+    """Speak text aloud with error handling — never crashes the conversation loop."""
+    try:
+        syn_config = get_mood_config(text)
+        audio_chunks = []
+        for chunk in piper_voice.synthesize(text, syn_config=syn_config):
+            audio_chunks.append(chunk.audio_int16_array)
+        audio_array = np.concatenate(audio_chunks)
+        sd.play(audio_array, samplerate=piper_voice.config.sample_rate)
+        sd.wait()
+        _error_state["consecutive_tts_errors"] = 0
+    except Exception as e:
+        _error_state["consecutive_tts_errors"] += 1
+        logger.error(f"TTS error (consecutive #{_error_state['consecutive_tts_errors']}): {e}")
+        # Don't crash — the text is already shown in chat via emit_message
 
 
 # UI updates are now handled by the UIBridge (ui_bridge.py) — no more raw JS injection.
@@ -543,8 +626,19 @@ def active_session(ui):
 
         user_text = transcribe()
         if user_text == "":
+            _error_state["consecutive_stt_empty"] += 1
+            # After 3 empty transcriptions in a row, give a verbal hint
+            if _error_state["consecutive_stt_empty"] == 3:
+                ui.emit_message("ROSE", "I'm having trouble hearing you — could you speak a bit louder?")
+                ui.set_state("speaking")
+                speak("I'm having trouble hearing you — could you speak a bit louder?")
+            elif _error_state["consecutive_stt_empty"] >= 5:
+                # Reset counter so we don't spam hints
+                _error_state["consecutive_stt_empty"] = 0
             ui.set_state("listening")
             continue
+        # Got valid text — reset STT error counter
+        _error_state["consecutive_stt_empty"] = 0
 
         if settings.get('name_gating') and not any(alias in user_text.lower() for alias in settings.get('rose_aliases')):
             ui.set_state("listening")

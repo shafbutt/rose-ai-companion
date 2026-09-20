@@ -18,7 +18,7 @@ from config import settings
 class UIBridge:
     """Exposed to the frontend as `window.pywebview.api`."""
 
-    def __init__(self, memory_manager=None, groq=None, action_manager=None):
+    def __init__(self, memory_manager=None, groq=None, action_manager=None, error_state=None):
         self._events = []
         self._lock = threading.Lock()
         self._state = "booting"
@@ -34,6 +34,7 @@ class UIBridge:
         self._memory = memory_manager    # injected reference — no circular import
         self._groq = groq               # injected reference — no circular import
         self._actions = action_manager   # injected reference — no circular import
+        self._error_state = error_state or {}  # injected reference — no circular import
 
     # ------------------------------------------------------------------ #
     #  Backend → UI  (called from the daemon thread)
@@ -186,6 +187,30 @@ class UIBridge:
             return {"ok": False}
         self._actions.cancel_pending()
         return {"ok": True}
+
+    # ------------------------------------------------------------------ #
+    #  Error resilience  (frontend → backend)
+    # ------------------------------------------------------------------ #
+
+    def get_error_status(self):
+        """Return current error state for UI health display."""
+        es = self._error_state
+        if not es:
+            return {
+                "consecutive_llm_errors": 0, "total_llm_errors": 0,
+                "total_llm_successes": 0, "api_healthy": True,
+                "last_error_type": "", "consecutive_tts_errors": 0,
+                "consecutive_stt_empty": 0,
+            }
+        return {
+            "consecutive_llm_errors": es.get("consecutive_llm_errors", 0),
+            "total_llm_errors": es.get("total_llm_errors", 0),
+            "total_llm_successes": es.get("total_llm_successes", 0),
+            "api_healthy": es.get("api_healthy", True),
+            "last_error_type": es.get("last_error_type", ""),
+            "consecutive_tts_errors": es.get("consecutive_tts_errors", 0),
+            "consecutive_stt_empty": es.get("consecutive_stt_empty", 0),
+        }
 
     # ------------------------------------------------------------------ #
     #  Poll endpoint  (called by frontend every ~250 ms)
