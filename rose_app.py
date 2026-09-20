@@ -26,6 +26,7 @@ from system_info import handle_system_query
 from permissions import PermissionManager
 from location_weather import handle_weather_query
 from web_search import handle_web_search_query
+from agent_tools import handle_research_query, handle_agent_tools
 
 load_dotenv()
 try:
@@ -375,6 +376,20 @@ def ask_llm(user_text):
         conversation_history.append({"role": "user", "content": user_text})
         conversation_history.append({"role": "assistant", "content": search_reply})
         return search_reply
+
+    # ---- Research mode (multi-source search) ----
+    research_reply = handle_research_query(user_text, permission_checker=perm_manager.is_allowed)
+    if research_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": research_reply})
+        return research_reply
+
+    # ---- Agent tools (calculations, conversions, notes) ----
+    agent_reply = handle_agent_tools(user_text, memory_manager=memory)
+    if agent_reply is not None:
+        conversation_history.append({"role": "user", "content": user_text})
+        conversation_history.append({"role": "assistant", "content": agent_reply})
+        return agent_reply
 
     # ---- Inject relevant memories into system prompt ----
     memory_context = memory.format_for_prompt(user_text, max_tokens=400)
