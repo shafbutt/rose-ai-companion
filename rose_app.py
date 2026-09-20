@@ -652,6 +652,12 @@ def active_session(ui):
         if time.time() - last_activity > settings.get('inactivity_timeout'):
             return  # go back to dormant
 
+        # ---- Mute awareness: if mic is muted, wait until unmuted ----
+        if ui._mic_muted:
+            ui.set_state("muted")
+            time.sleep(0.5)
+            continue
+
         avg_volume = record_audio()
         ui.set_state("thinking")
 

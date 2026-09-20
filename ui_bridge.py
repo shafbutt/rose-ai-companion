@@ -36,6 +36,7 @@ class UIBridge:
         self._actions = action_manager   # injected reference — no circular import
         self._error_state = error_state or {}  # injected reference — no circular import
         self._permissions = permission_manager  # injected reference — no circular import
+        self._mic_muted = False  # mute state — when True, ROSE doesn't listen
 
     # ------------------------------------------------------------------ #
     #  Backend → UI  (called from the daemon thread)
@@ -238,6 +239,24 @@ class UIBridge:
         return {"ok": True}
 
     # ------------------------------------------------------------------ #
+    #  Mute control  (frontend → backend)
+    # ------------------------------------------------------------------ #
+
+    def toggle_mute(self):
+        """Toggle microphone mute state. Returns new state."""
+        self._mic_muted = not self._mic_muted
+        return {"muted": self._mic_muted}
+
+    def set_mute(self, muted: bool):
+        """Set microphone mute state explicitly."""
+        self._mic_muted = bool(muted)
+        return {"muted": self._mic_muted}
+
+    def is_muted(self):
+        """Return current mute state."""
+        return {"muted": self._mic_muted}
+
+    # ------------------------------------------------------------------ #
     #  Poll endpoint  (called by frontend every ~250 ms)
     # ------------------------------------------------------------------ #
 
@@ -251,6 +270,7 @@ class UIBridge:
             "uptime": int(time.time() - self._start_time),
             "api_status": self._api_status,
             "mic_device": self._mic_device,
+            "mic_muted": self._mic_muted,
         }
         with self._lock:
             events = list(self._events)
